@@ -6,6 +6,7 @@
 - **Course Name:** Operating Systems
 - **Team Members:**
   - [Mahammadalı Aliyev] - [220315090]
+  - [Jalil Guliyev] - [220315102]
 
 ### 2. System Design
 The FerryTrans system is designed as a highly concurrent, multithreaded Java application. It models a complex synchronization problem where independent threads (representing vehicles) must coordinate with a central orchestrator thread (representing the ferry) to cross a river between a Mainland and an Island port.
