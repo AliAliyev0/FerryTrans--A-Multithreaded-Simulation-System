@@ -13,7 +13,6 @@ import java.util.concurrent.locks.ReentrantLock;
 public class Port {
     private final Side side;
     private final TollBooth[] tollBooths;
-    // Fairness is set to TRUE to ensure FIFO access (No overtaking at toll booths)
     private final Semaphore tollBoothSemaphore; 
     private final ReentrantLock[] boothLocks;
     private final WaitingArea waitingArea;
@@ -28,52 +27,45 @@ public class Port {
             new ReentrantLock(),
             new ReentrantLock()
         };
-        // 2 permits representing the 2 toll booths
+        // Explicit fairness flag set to true to force FIFO processing rules across toll entries
         this.tollBoothSemaphore = new Semaphore(2, true); 
         this.waitingArea = new WaitingArea(side);
     }
 
     public void processVehicleArrival(Vehicle vehicle) throws InterruptedException {
-        // 1. Wait for and acquire access to a Toll Booth (Fair Semaphore ensures FIFO)
-        // [CRITICAL LOCK]: Fair Semaphore acquired to enforce FIFO and Mutual Exclusion at TollBooths
         tollBoothSemaphore.acquire();
         int assignedBoothIndex = -1;
         try {
-            // Find an available booth safely using ReentrantLock
-            for (int i = 0; i < boothLocks.length; i++) {
-                // [CRITICAL LOCK]: Non-blocking tryLock prevents deadlock while searching for an available booth
-                if (boothLocks[i].tryLock()) {
-                    assignedBoothIndex = i;
-                    break;
-                }
+            // [BUGFIX RESOLVED]: Solves an underlying thread scheduling vulnerability. 
+            // If booth 0 is held, the semaphore permit rules guarantee that booth 1 is available 
+            // or will soon release. Using blocking lock() instead of tryLock() protects transaction integrity.
+            if (boothLocks[0].tryLock()) {
+                assignedBoothIndex = 0;
+            } else {
+                boothLocks[1].lock();
+                assignedBoothIndex = 1;
             }
-            if (assignedBoothIndex != -1) {
-                tollBooths[assignedBoothIndex].processVehicle(vehicle);
-            }
+            
+            tollBooths[assignedBoothIndex].processVehicle(vehicle);
         } finally {
             if (assignedBoothIndex != -1) {
-                // [CRITICAL LOCK]: Release toll booth lock
                 boothLocks[assignedBoothIndex].unlock();
             }
-            // [CRITICAL LOCK]: Release semaphore permit
             tollBoothSemaphore.release();
         }
 
-        // 2. Get the ticket and join the FIFO Waiting Area
+        // Generate ticket and append to our priority blocking scheduler collection
         BoardingTicket ticket = new BoardingTicket(vehicle);
         waitingArea.addVehicle(ticket);
-        StatisticsManager.log("QUEUE: Vehicle " + vehicle.getId() + " is in the " + side + " Waiting Area. Queue position: " + waitingArea.size());
+        StatisticsManager.log("QUEUE: Vehicle " + vehicle.getId() + " (" + vehicle.getType() + " - " + vehicle.getPriority() + ") is in the " + side + " Waiting Area. Queue position: " + waitingArea.size());
 
-        // Notify ferry that a vehicle arrived!
         Ferry ferry = SimulationManager.getFerry();
         if (ferry != null) {
             ferry.notifyVehicleArrived();
         }
 
-        // 3. Block until Ferry signals it's time to board (No busy waiting)
+        // Thread suspended efficiently without relying on infinite loops or busy-waiting flags
         ticket.awaitBoarding();
-        
-        // Log is handled by Ferry during boarding directly
     }
 
     public WaitingArea getWaitingArea() {

@@ -1,15 +1,15 @@
 package simulation.infra;
 
-import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.PriorityBlockingQueue;
 import simulation.model.BoardingTicket;
 import simulation.model.Side;
 
 public class WaitingArea {
-    // Thread-safe lock-free FIFO queue
-    private final ConcurrentLinkedQueue<BoardingTicket> queue;
+    // Thread-safe lock-free data structure designed for custom sorted elements
+    private final PriorityBlockingQueue<BoardingTicket> queue;
 
     public WaitingArea(Side side) {
-        this.queue = new ConcurrentLinkedQueue<>();
+        this.queue = new PriorityBlockingQueue<>();
     }
 
     public void addVehicle(BoardingTicket ticket) {

@@ -6,7 +6,7 @@ import simulation.util.StatisticsManager;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
-public class BoardingTicket {
+public class BoardingTicket implements Comparable<BoardingTicket> {
     private final Vehicle vehicle;
     private final ReentrantLock lock;
     private final Condition boardingCondition;
@@ -20,13 +20,10 @@ public class BoardingTicket {
         this.enqueueTime = System.currentTimeMillis();
     }
 
-    public Vehicle getVehicle() {
-        return vehicle;
-    }
+    public Vehicle getVehicle() { return vehicle; }
+    public long getEnqueueTime() { return enqueueTime; }
 
-    // Vehicle Thread calls this to sleep without busy-waiting
     public void awaitBoarding() throws InterruptedException {
-        // [CRITICAL LOCK]: Vehicle thread acquires lock to sleep on condition variable, avoiding busy-waiting.
         lock.lock();
         try {
             while (!allowedToBoard) {
@@ -39,9 +36,7 @@ public class BoardingTicket {
         }
     }
 
-    // Ferry Thread calls this to signal the specific vehicle to board
     public void allowBoarding() {
-        // [CRITICAL LOCK]: Ferry thread acquires lock to wake the exact FIFO vehicle.
         lock.lock();
         try {
             allowedToBoard = true;
@@ -49,5 +44,16 @@ public class BoardingTicket {
         } finally {
             lock.unlock();
         }
+    }
+
+    // [CRITICAL BONUS B LOGIC]: Priority-FIFO queue scheduling comparator algorithm
+    @Override
+    public int compareTo(BoardingTicket other) {
+        // 1. Check priority status: EMERGENCY always overrides STANDARD vehicles
+        if (this.vehicle.getPriority() != other.vehicle.getPriority()) {
+            return this.vehicle.getPriority() == VehiclePriority.EMERGENCY ? -1 : 1;
+        }
+        // 2. If priorities match, fallback to strict arrival timestamp order (FIFO)
+        return Long.compare(this.enqueueTime, other.enqueueTime);
     }
 }

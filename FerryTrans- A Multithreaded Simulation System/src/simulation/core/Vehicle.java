@@ -2,6 +2,7 @@ package simulation.core;
 
 import simulation.model.Side;
 import simulation.model.VehicleType;
+import simulation.model.VehiclePriority;
 import simulation.infra.Port;
 import simulation.util.StatisticsManager;
 
@@ -16,8 +17,9 @@ public class Vehicle implements Runnable {
     private final int id;
     private final VehicleType type;
     private final Side startingSide;
+    private final VehiclePriority priority;
     
-    // Synch variables to coordinate disembarkation
+    // Locks and synchronization primitives to safely control cross-river disembarkation
     private final ReentrantLock lock = new ReentrantLock();
     private final Condition disembarkCondition = lock.newCondition();
     private boolean hasDisembarked = false;
@@ -25,22 +27,18 @@ public class Vehicle implements Runnable {
     public Vehicle(VehicleType type) {
         this.id = idGenerator.incrementAndGet();
         this.type = type;
-        // Randomly assign the starting side
         this.startingSide = ThreadLocalRandom.current().nextBoolean() ? Side.MAINLAND : Side.ISLAND;
-        StatisticsManager.log("CREATION: Vehicle " + id + " (" + type + ") created at " + startingSide);
+        
+        // 15% probability assigned as an EMERGENCY priority vehicle, otherwise STANDARD
+        this.priority = (ThreadLocalRandom.current().nextInt(100) < 15) ? VehiclePriority.EMERGENCY : VehiclePriority.STANDARD;
+        
+        StatisticsManager.log("CREATION: Vehicle " + id + " (" + type + " - " + priority + ") created at " + startingSide);
     }
 
-    public int getId() {
-        return id;
-    }
-
-    public VehicleType getType() {
-        return type;
-    }
-
-    public Side getStartingSide() {
-        return startingSide;
-    }
+    public int getId() { return id; }
+    public VehicleType getType() { return type; }
+    public Side getStartingSide() { return startingSide; }
+    public VehiclePriority getPriority() { return priority; }
     
     public void resetDisembarkState() {
         lock.lock();
@@ -52,7 +50,6 @@ public class Vehicle implements Runnable {
     }
 
     public void notifyDisembark() {
-        // [CRITICAL LOCK]: Ferry thread signals vehicle that it has safely reached the other side.
         lock.lock();
         try {
             hasDisembarked = true;
@@ -63,7 +60,6 @@ public class Vehicle implements Runnable {
     }
 
     public void waitForDisembark() throws InterruptedException {
-        // [CRITICAL LOCK]: Vehicle thread locks to wait for ferry unloading broadcast.
         lock.lock();
         try {
             while (!hasDisembarked) {
@@ -77,28 +73,26 @@ public class Vehicle implements Runnable {
     @Override
     public void run() {
         try {
-            // ----- FIRST TRIP (Outbound) -----
+            // ----- OUTBOUND JOURNEY (First Trip) -----
             Port startingPort = SimulationManager.getPort(startingSide);
             startingPort.processVehicleArrival(this);
             waitForDisembark();
             
             StatisticsManager.log("ARRIVAL: Vehicle " + id + " has reached " + startingSide.getOpposite() + ".");
             
-            // Random delay (activities on the other side)
+            // Simulating business activities on the destination island/mainland side
             Thread.sleep(ThreadLocalRandom.current().nextInt(1000, 3000));
             
-            // Prepare for return trip
             resetDisembarkState();
             
-            // ----- SECOND TRIP (Return) -----
+            // ----- RETURN JOURNEY (Second Trip) -----
             Port returnPort = SimulationManager.getPort(startingSide.getOpposite());
-            StatisticsManager.log("RETURN: Vehicle " + id + " is entering " + startingSide.getOpposite() + " port for return trip.");
+            StatisticsManager.log("RETURN: Vehicle " + id + " (" + priority + ") is entering " + startingSide.getOpposite() + " port for return trip.");
             returnPort.processVehicleArrival(this);
             waitForDisembark();
             
             StatisticsManager.log("COMPLETION: Vehicle " + id + " has returned to " + startingSide + " and finished its round trip!");
             
-            // Signal Completion
             SimulationManager.markVehicleCompleted();
             
         } catch (InterruptedException e) {

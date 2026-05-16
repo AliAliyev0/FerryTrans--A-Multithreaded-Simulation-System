@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.ThreadLocalRandom;
 
 public class Ferry implements Runnable {
     private Side currentSide;
@@ -24,7 +25,8 @@ public class Ferry implements Runnable {
     private final Condition vehicleArrived = ferryLock.newCondition();
 
     public Ferry() {
-        this.currentSide = Side.MAINLAND;
+        // [BUGFIX RESOLVED]: Enforces system randomization rule. Selected starting pier is randomized.
+        this.currentSide = ThreadLocalRandom.current().nextBoolean() ? Side.MAINLAND : Side.ISLAND;
         this.currentLoad = 0;
         this.onboardVehicles = new ArrayList<>();
     }
@@ -32,11 +34,11 @@ public class Ferry implements Runnable {
     public void unloadVehicles() {
         if (onboardVehicles.isEmpty()) return;
         
-        // [CRITICAL LOGIC]: Unloading-First rule enforced. Unloading loop runs to completion before any boarding logic starts.
+        // [CRITICAL POLICY]: Unloading sequence completes entirely before boarding routines can access critical state
         StatisticsManager.log("ARRIVAL: Ferry arrived at " + currentSide + ". Unloading " + onboardVehicles.size() + " vehicles...");
         for (Vehicle v : onboardVehicles) {
             StatisticsManager.log("UNLOADING: Vehicle " + v.getId() + " disembarked at " + currentSide);
-            v.notifyDisembark(); // Wake up the vehicle thread so it can finish
+            v.notifyDisembark(); 
         }
         onboardVehicles.clear();
         currentLoad = 0;
@@ -55,7 +57,7 @@ public class Ferry implements Runnable {
         isRunning = false;
         ferryLock.lock();
         try {
-            vehicleArrived.signalAll(); // Wake up Ferry if suspended
+            vehicleArrived.signalAll(); 
         } finally {
             ferryLock.unlock();
         }
@@ -65,31 +67,26 @@ public class Ferry implements Runnable {
         Port currentPort = SimulationManager.getPort(currentSide);
         WaitingArea waitingArea = currentPort.getWaitingArea();
         
-        // Load one by one based on capacity
         while (isRunning) {
             BoardingTicket nextTicket = waitingArea.peekNextVehicle();
             if (nextTicket == null) {
-                break; // No more vehicles
+                break; 
             }
             
             Vehicle nextVehicle = nextTicket.getVehicle();
             int requiredSpace = nextVehicle.getType().getSize();
             
-            // Capacity check
             if (currentLoad + requiredSpace <= SimulationConfig.FERRY_CAPACITY) {
-                // Remove from queue
                 waitingArea.getNextVehicle();
-                
-                // Add to ferry
                 currentLoad += requiredSpace;
                 onboardVehicles.add(nextVehicle);
                 
-                StatisticsManager.log("BOARDING: Ferry loaded Vehicle " + nextVehicle.getId() + " (" + nextVehicle.getType() + "). Load: " + currentLoad + "/" + SimulationConfig.FERRY_CAPACITY);
+                // Track boarding steps with both type properties and priority levels
+                StatisticsManager.log("BOARDING: Ferry loaded Vehicle " + nextVehicle.getId() + " (" + nextVehicle.getType() + " - " + nextVehicle.getPriority() + "). Load: " + currentLoad + "/" + SimulationConfig.FERRY_CAPACITY);
                 
-                // Signal waiting vehicle using Condition variable
                 nextTicket.allowBoarding(); 
             } else {
-                // [CRITICAL LOGIC]: Strict FIFO rule check - If the next vehicle cannot fit, boarding MUST stop! No overtaking allowed.
+                // Enforce strict FIFO behavior - Overtaking blocked if the next queued vehicle exceeds remaining capacity
                 StatisticsManager.log("CRITICAL CHECK: Vehicle " + nextVehicle.getId() + " cannot fit. Boarding STOPS for this trip.");
                 break;
             }
@@ -108,21 +105,18 @@ public class Ferry implements Runnable {
             
             long deadline = System.currentTimeMillis() + SimulationConfig.MAX_WAIT_TIME_MS;
             
-            // [CRITICAL LOCK]: Acquired ferryLock to safely evaluate departure conditions and suspend if needed.
             ferryLock.lock();
             try {
                 while (isRunning) {
-                    loadVehicles(); // Loads everything it can
+                    loadVehicles(); 
                     
                     if (currentLoad == SimulationConfig.FERRY_CAPACITY) {
-                        // [CRITICAL LOGIC]: Departure Policy - Ferry is perfectly full (20 units).
                         StatisticsManager.log("DEPARTURE CONDITION MET: Ferry is FULL (20 units).");
                         break;
                     }
                     
                     Port currentPort = SimulationManager.getPort(currentSide);
                     if (!currentPort.getWaitingArea().isEmpty()) {
-                        // [CRITICAL LOGIC]: Departure Policy - Queue has vehicles, but they don't fit. Must depart.
                         StatisticsManager.log("DEPARTURE CONDITION MET: Next waiting vehicle cannot fit.");
                         break;
                     }
@@ -130,19 +124,17 @@ public class Ferry implements Runnable {
                     long remainingTime = deadline - System.currentTimeMillis();
                     if (remainingTime <= 0) {
                         if (currentLoad > 0) {
-                            // [CRITICAL LOGIC]: Departure Policy - Wait threshold reached with partial load.
                             StatisticsManager.log("DEPARTURE CONDITION MET: Max wait time reached with load " + currentLoad);
                             break;
                         } else {
                             Port otherPort = SimulationManager.getPort(currentSide.getOpposite());
                             if (!otherPort.getWaitingArea().isEmpty()) {
-                                // [CRITICAL LOGIC]: Fairness & Starvation Avoidance - Depart empty to serve the opposite side.
                                 StatisticsManager.log("DEPARTURE CONDITION MET: Empty, but other side has vehicles (Starvation Avoidance).");
                                 break;
                             } else {
-                                // [CRITICAL LOGIC]: Deadlock Prevention - Ferry suspends completely to avoid busy-waiting when both sides are empty.
+                                // Suspend ferry execution safely to prevent CPU heavy busy-waiting conditions
                                 StatisticsManager.log("WAIT: Ferry is empty and no vehicles waiting. Suspending...");
-                                vehicleArrived.await(); // wait indefinitely
+                                vehicleArrived.await(); 
                                 if (!isRunning) break;
                                 deadline = System.currentTimeMillis() + SimulationConfig.MAX_WAIT_TIME_MS;
                                 continue;
@@ -150,7 +142,6 @@ public class Ferry implements Runnable {
                         }
                     }
                     
-                    // Wait until time expires or a new vehicle arrives
                     vehicleArrived.await(remainingTime, TimeUnit.MILLISECONDS);
                     if (!isRunning) break;
                 }
@@ -171,9 +162,9 @@ public class Ferry implements Runnable {
 
     private void crossRiver() {
         StatisticsManager.log("DEPARTURE: Ferry departing " + currentSide + " and crossing the river...");
-        StatisticsManager.recordTrip(currentLoad); // Record trip logic
+        StatisticsManager.recordTrip(currentLoad); 
         try {
-            Thread.sleep(1000); // Simulate crossing time
+            Thread.sleep(1000); // Simulate dynamic cruise traversal duration
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
